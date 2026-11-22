@@ -1,4 +1,4 @@
-```yaml name=.github/workflows/blank.yml
+name=.github/workflows/blank.yml
 name: Build and publish APK
 
 on:
@@ -154,4 +154,3 @@ jobs:
           name: Control Center APK (build ${{ github.run_number }})
           files: ControlCenterOverlay.apk
           make_latest: true
-```
