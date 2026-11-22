@@ -1,3 +1,4 @@
+```yaml name=.github/workflows/blank.yml
 name: Build and publish APK
 
 on:
@@ -11,10 +12,13 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -29,25 +33,101 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -f "$GITHUB_WORKSPACE/settings.gradle" || -f "$GITHUB_WORKSPACE/settings.gradle.kts" ]]; then
+
+          if [[ -f "$GITHUB_WORKSPACE/settings.gradle" ||
+                -f "$GITHUB_WORKSPACE/settings.gradle.kts" ]]; then
             project_dir="$GITHUB_WORKSPACE"
           else
             archive="$(find "$GITHUB_WORKSPACE" -maxdepth 2 -type f -iname '*.zip' -print -quit)"
-            [[ -n "$archive" ]] || { echo "No source ZIP found." >&2; exit 1; }
+            [[ -n "$archive" ]] || {
+              echo "No source ZIP found."
+              exit 1
+            }
 
             source_dir="$RUNNER_TEMP/android-source"
+            rm -rf "$source_dir"
             mkdir -p "$source_dir"
             unzip -q "$archive" -d "$source_dir"
 
-            settings_file="$(find "$source_dir" -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit)"
-            [[ -n "$settings_file" ]] || { echo "ZIP does not contain a Gradle Android project." >&2; exit 1; }
+            settings_file="$(
+              find "$source_dir" -type f \
+                \( -name settings.gradle -o -name settings.gradle.kts \) \
+                -print -quit
+            )"
+
+            [[ -n "$settings_file" ]] || {
+              echo "ZIP does not contain a Gradle Android project."
+              exit 1
+            }
 
             project_dir="$(dirname "$settings_file")"
           fi
+
           echo "project_dir=$project_dir" >> "$GITHUB_OUTPUT"
 
+      - name: Patch accessibility service resource
+        env:
+          PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          config="$PROJECT_DIR/app/src/main/res/xml/accessibility_service_config.xml"
+          strings="$PROJECT_DIR/app/src/main/res/values/strings.xml"
+
+          [[ -f "$config" ]] || {
+            echo "Missing $config"
+            exit 1
+          }
+
+          [[ -f "$strings" ]] || {
+            echo "Missing $strings"
+            exit 1
+          }
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+
+          project = Path(os.environ["PROJECT_DIR"])
+          config = project / "app/src/main/res/xml/accessibility_service_config.xml"
+          strings = project / "app/src/main/res/values/strings.xml"
+
+          text = config.read_text()
+
+          text = text.replace(
+              'android:description="Shows the Control Center floating handle over other apps and provides optional system navigation actions."',
+              'android:description="@string/accessibility_service_description"',
+          )
+
+          config.write_text(text)
+
+          string_text = strings.read_text()
+
+          if 'name="accessibility_service_description"' not in string_text:
+              string_resource = (
+                  '    <string name="accessibility_service_description">'
+                  'Shows the Control Center floating handle over other apps '
+                  'and provides optional system navigation actions.'
+                  '</string>\n'
+              )
+
+              if "</resources>" in string_text:
+                  string_text = string_text.replace(
+                      "</resources>",
+                      string_resource + "</resources>",
+                  )
+                  strings.write_text(string_text)
+          PY
+
       - name: Build APK
-        run: gradle -p "${{ steps.project.outputs.project_dir }}" :app:assembleDebug --no-daemon --stacktrace
+        env:
+          PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
+        run: |
+          gradle -p "$PROJECT_DIR" \
+            :app:assembleDebug \
+            --no-daemon \
+            --stacktrace
 
       - name: Stage APK
         env:
@@ -55,21 +135,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           apk="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
           test -f "$apk"
           cp "$apk" ControlCenterOverlay.apk
 
-      - name: Upload artifact
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: ControlCenterOverlay-debug-apk
           path: ControlCenterOverlay.apk
           if-no-files-found: error
 
-      - name: Publish release
+      - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
           name: Control Center APK (build ${{ github.run_number }})
           files: ControlCenterOverlay.apk
           make_latest: true
+```
